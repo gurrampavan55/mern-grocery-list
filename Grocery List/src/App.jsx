@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/items'
@@ -9,7 +9,68 @@ function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [syncing, setSyncing] = useState(false)
+
+  const saveQueue = useCallback((q) => {
+    try {
+      localStorage.setItem('grocery_queue', JSON.stringify(q))
+    } catch (e) {
+      console.error('Failed to save queue', e)
+    }
+  }, [])
+
+  const fetchItems = useCallback(async () => {
+    try {
+      setLoading(true)
+      const response = await fetch(API_URL)
+      if (!response.ok) throw new Error(response.statusText || 'Network response not ok')
+      const data = await response.json()
+      if (data && data.success) {
+        setItems(data.data)
+        setError(null)
+      } else {
+        setError('Failed to fetch items')
+      }
+    } catch (err) {
+      setError('Failed to fetch items (backend unreachable)')
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const checkAndSyncQueue = useCallback(async () => {
+    if (!queuedItems || queuedItems.length === 0) return
+    const remaining = []
+    for (let qi of queuedItems) {
+      try {
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: qi.text })
+        })
+        const data = await response.json()
+        if (data && data.success) {
+          setItems(prev => {
+            return prev.map(it => (it._id === qi._id ? data.data : it))
+          })
+        } else {
+          remaining.push(qi)
+        }
+      } catch (err) {
+        console.error('Sync failed for item', qi, err)
+        remaining.push(qi)
+      }
+    }
+
+    setQueuedItems(remaining)
+    saveQueue(remaining)
+    if (remaining.length === 0) fetchItems()
+  }, [queuedItems, saveQueue, fetchItems])
+
+  const handleOnline = useCallback(() => {
+    setError(null)
+    checkAndSyncQueue()
+  }, [checkAndSyncQueue])
 
   // Initialize: load queued items and fetch remote items
   useEffect(() => {
@@ -34,73 +95,7 @@ function App() {
       clearInterval(interval)
       window.removeEventListener('online', handleOnline)
     }
-  }, [])
-
-  const handleOnline = () => {
-    setError(null)
-    checkAndSyncQueue()
-  }
-
-  const saveQueue = (q) => {
-    try {
-      localStorage.setItem('grocery_queue', JSON.stringify(q))
-    } catch (e) {
-      console.error('Failed to save queue', e)
-    }
-  }
-
-  const fetchItems = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch(API_URL)
-      if (!response.ok) throw new Error(response.statusText || 'Network response not ok')
-      const data = await response.json()
-      if (data && data.success) {
-        setItems(data.data)
-        setError(null)
-      } else {
-        setError('Failed to fetch items')
-      }
-    } catch (err) {
-      setError('Failed to fetch items (backend unreachable)')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Try to sync any queued items to backend
-  const checkAndSyncQueue = async () => {
-    if (!queuedItems || queuedItems.length === 0) return
-    setSyncing(true)
-    const remaining = []
-    for (let qi of queuedItems) {
-      try {
-        const response = await fetch(API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: qi.text })
-        })
-        const data = await response.json()
-        if (data && data.success) {
-          // replace temp item in items list with returned item
-          setItems(prev => {
-            return prev.map(it => (it._id === qi._id ? data.data : it))
-          })
-        } else {
-          remaining.push(qi)
-        }
-      } catch (err) {
-        console.error('Sync failed for item', qi, err)
-        remaining.push(qi)
-      }
-    }
-
-    setQueuedItems(remaining)
-    saveQueue(remaining)
-    setSyncing(false)
-    if (remaining.length === 0) fetchItems()
-  }
+  }, [checkAndSyncQueue, fetchItems, handleOnline])
 
   const addDefaultItems = async () => {
     try {
